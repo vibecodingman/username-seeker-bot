@@ -47,31 +47,28 @@ async def check_username_on_fragment(username: str) -> str:
     # Пытаемся сделать запрос до 3 раз, если упал DNS или сеть
     for attempt in range(3):
         try:
-            # transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0") помогает сбросить кэш DNS
-            async melon_client() as client:
-                async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
-                    response = await client.get(url)
-                    
-                    if response.status_code == 200:
-                        html = response.text
-                        if "An auction for this username" in html or "Unavailable" in html or "Taken" in html:
-                            return "taken"
-                        elif "Available" in html or "is available" in html.lower():
-                            return "available"
-                        else:
-                            return "taken"
-                    elif response.status_code == 404:
+            async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                
+                if response.status_code == 200:
+                    html = response.text
+                    if "An auction for this username" in html or "Unavailable" in html or "Taken" in html:
+                        return "taken"
+                    elif "Available" in html or "is available" in html.lower():
                         return "available"
+                    else:
+                        return "taken"
+                elif response.status_code == 404:
+                    return "available"
+                
+                if response.status_code == 429:
+                    logger.warning("Fragment выдал 429 (Too Many Requests). Спим дольше...")
+                    await asyncio.sleep(15)
                     
-                    # Если поймалиcloud-flare заглушку или 429 Too Many Requests
-                    if response.status_code == 429:
-                        logger.warning("Fragment выдал 429 (Too Many Requests). Спим дольше...")
-                        await asyncio.sleep(15)
-                        
         except Exception as e:
             logger.warning(f"Попытка {attempt+1} не удалась для {username}: {e}")
             if attempt < 2:
-                await asyncio.sleep(3) # Ждем 3 секунды перед следующей попыткой
+                await asyncio.sleep(3) # Ждем перед следующей попыткой
             else:
                 logger.error(f"Финальная ошибка для {username}: {e}")
                 return "error"
