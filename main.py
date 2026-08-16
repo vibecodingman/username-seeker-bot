@@ -36,10 +36,8 @@ async def check_username_via_telegram(username: str) -> str:
         return "taken"
 
 def generate_random_username(length: int) -> str:
-    # Юзернейм не может начинаться с цифры в Telegram
-    first_char = random.choice(string.ascii_lowercase)
-    other_chars = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(length - 1))
-    return first_char + other_chars
+    # Генерируем только из букв (string.ascii_lowercase)
+    return "".join(random.choice(string.ascii_lowercase) for _ in range(length))
 
 async def scanning_loop(chat_id: int):
     global is_scanning
@@ -47,7 +45,9 @@ async def scanning_loop(chat_id: int):
     
     while is_scanning:
         # Случайно выбираем длину: 5, 6 или 7 знаков
-        length = random.choice([5, 6, 7])
+        # Заменить random.choice([5, 6, 7]) на:
+        length = random.choice([5, 6])
+
         username = generate_random_username(length)
         
         status = await check_username_via_telegram(username)
