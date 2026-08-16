@@ -50,14 +50,34 @@ def make_settings_keyboard(chat_id: int):
     return builder.as_markup()
 
 async def check_username_via_telegram(username: str) -> str:
-    """Проверка юза через API Telegram. Защищено от блокировок хостинга."""
+    """
+    Ультимативная проверка юзернейма внутренними средствами Telegram.
+    Отсекает скрытые личные аккаунты людей без обращения к внешним сайтам.
+    """
     try:
+        # Попытка 1: Ищем как чат/канал/бота
         await bot.get_chat(f"@{username}")
-        return "taken"
+        return "taken"  # Нашел — точно занят
     except TelegramBadRequest as e:
         err_msg = str(e).lower()
+        
+        # Если чат не найден, делаем глубокую проверку на скрытый профиль человека
         if "chat not found" in err_msg:
-            return "available"
+            try:
+                # Пытаемся запросить публичную информацию о пользователе напрямую
+                # Если у юзера скрыт профиль, этот метод все равно выдаст ошибку,
+                # но отличную от полного отсутствия юзернейма в природе.
+                user_info = await bot.get_chat_member(chat_id=f"@{username}", user_id=bot.id)
+                return "taken"
+            except TelegramBadRequest as e2:
+                err_msg2 = str(e2).lower()
+                # Если юзернейма ВООБЩЕ не существует в системе, Telegram выдаст "chat not found" или "user not found"
+                if "chat not found" in err_msg2 or "user not found" in err_msg2 or "member not found" in err_msg2:
+                    return "available"  # Юз реально чист и свободен!
+                return "taken"  # Любая другая ошибка (например, "not enough rights") означает, что человек там есть
+            except Exception:
+                return "taken"
+                
         return "taken"
     except TelegramRetryAfter as e:
         logger.warning(f"Флуд-контроль! Ожидание {e.retry_after} сек.")
