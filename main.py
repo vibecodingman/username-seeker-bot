@@ -3,7 +3,6 @@ import random
 import string
 import logging
 import os
-from fastapi import FastAPI
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
@@ -12,23 +11,16 @@ from aiogram.exceptions import TelegramBadRequest
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FastAPI для хелсчека Render
-app = FastAPI()
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 is_scanning = False
 
-@app.get("/")
-def read_root():
-    return {"status": "running", "info": "Internal Telegram Checker"}
-
 async def check_username_via_telegram(username: str) -> str:
     """
     Проверяет юзернейм внутренними средствами Telegram.
-    Не использует HTTP-запросы, поэтому защищен от блокировок DNS.
+    Идеально для Render, так как не делает сторонних HTTP-запросов.
     """
     try:
         # Просим Telegram найти чат/канал с таким юзернеймом
@@ -44,15 +36,17 @@ async def check_username_via_telegram(username: str) -> str:
         return "taken"
 
 def generate_random_username(length: int) -> str:
+    # Юзернейм не может начинаться с цифры в Telegram
     first_char = random.choice(string.ascii_lowercase)
     other_chars = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(length - 1))
     return first_char + other_chars
 
 async def scanning_loop(chat_id: int):
     global is_scanning
-    await bot.send_message(chat_id, "🚀 Поиск запущен через внутреннюю систему Telegram! Блокировки нам больше не страшны.")
+    await bot.send_message(chat_id, "🚀 Поиск запущен через внутреннюю систему Telegram! Блокировки сети нам больше не страшны.")
     
     while is_scanning:
+        # Случайно выбираем длину: 5, 6 или 7 знаков
         length = random.choice([5, 6, 7])
         username = generate_random_username(length)
         
@@ -69,7 +63,7 @@ async def scanning_loop(chat_id: int):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "Привет! Я внутренний чекер юзернеймов.\n\n"
+        "Привет! Я внутренний чекер юзернеймов (5-7 знаков).\n\n"
         "Команды:\n"
         "/search — Начать поиск\n"
         "/stop — Остановить поиск"
@@ -93,6 +87,10 @@ async def cmd_stop(message: types.Message):
     is_scanning = False
     await message.answer("🛑 Поиск остановлен.")
 
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(dp.start_polling(bot))
+# Простой и прямой запуск без веб-серверов
+async def main():
+    logger.info("Бот успешно запущен!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
