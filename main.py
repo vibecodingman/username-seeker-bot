@@ -34,45 +34,27 @@ def read_root():
 
 async def check_username_on_fragment(username: str) -> str:
     """
-    Проверяет статус юзернейма через Fragment.com.
-    Версия с автоматическим ретраем при ошибках сети.
+    Проверяет статус юзернейма через официальный веб-интерфейс t.me.
+    Защищено от блокировок DNS на Render.
     """
-    url = f"https://fragment.com{username}"
+    url = f"https://t.me{username}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    
-    # Пытаемся сделать запрос до 3 раз, если упал DNS или сеть
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(headers=headers, timeout=10.0, follow_redirects=True) as client:
-                response = await client.get(url)
-                
-                if response.status_code == 200:
-                    html = response.text
-                    if "An auction for this username" in html or "Unavailable" in html or "Taken" in html:
-                        return "taken"
-                    elif "Available" in html or "is available" in html.lower():
-                        return "available"
-                    else:
-                        return "taken"
-                elif response.status_code == 404:
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=8.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                html = response.text
+                # Если страницы юзернейма нет (показывается кнопка открытия приложения, но нет блока профиля)
+                if "If you have Telegram, you can contact" in html and "Preview channel" not in html:
+                    # Для надежности проверяем, нет ли текста о том, что канал/группа не найдены
                     return "available"
-                
-                if response.status_code == 429:
-                    logger.warning("Fragment выдал 429 (Too Many Requests). Спим дольше...")
-                    await asyncio.sleep(15)
-                    
-        except Exception as e:
-            logger.warning(f"Попытка {attempt+1} не удалась для {username}: {e}")
-            if attempt < 2:
-                await asyncio.sleep(3) # Ждем перед следующей попыткой
-            else:
-                logger.error(f"Финальная ошибка для {username}: {e}")
-                return "error"
-    return "taken"
+                return "taken"
+            return "taken"
+    except Exception as e:
+        logger.error(f"Ошибка сети для @{username}: {e}")
+        return "error"
 
 def generate_random_username(length: int) -> str:
     """Генерирует случайный юзернейм заданной длины (только латиница и цифры)"""
