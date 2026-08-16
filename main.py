@@ -3,12 +3,11 @@ import random
 import string
 import logging
 import os
-import httpx
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -16,110 +15,151 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище запущенных задач поиска {chat_id: asyncio.Task}
+# Хранилище запущенных задач {chat_id: asyncio.Task}
 active_scans = {}
 
-async def check_via_telegram_api(username: str) -> str:
-    """Шаг 1: Быстрая проверка через официальное API Telegram"""
+# Настройки пользователей {chat_id: {"length": 5, "use_digits": False}}
+user_settings = {}
+
+def get_default_settings(chat_id: int) -> dict:
+    if chat_id not in user_settings:
+        user_settings[chat_id] = {"length": 5, "use_digits": False}
+    return user_settings[chat_id]
+
+def make_settings_keyboard(chat_id: int):
+    settings = get_default_settings(chat_id)
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопки выбора длины
+    len5_text = "✅ 5 знаков" if settings["length"] == 5 else "5 знаков"
+    len6_text = "✅ 6 знаков" if settings["length"] == 6 else "6 знаков"
+    builder.button(text=len5_text, callback_data="set_len_5")
+    builder.button(text=len6_text, callback_data="set_len_6")
+    
+    # Кнопка выбора цифр
+    digits_text = "🔢 Цифры: ВКЛ" if settings["use_digits"] else "🔤 Только буквы"
+    builder.button(text=digits_text, callback_data="toggle_digits")
+    
+    # Кнопка управления поиском
+    if chat_id in active_scans:
+        builder.button(text="🛑 ОСТАНОВИТЬ ПОИСК", callback_data="stop_search")
+    else:
+        builder.button(text="🚀 ЗАПУСТИТЬ ПОИСК", callback_data="start_search")
+        
+    builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+async def check_username_via_telegram(username: str) -> str:
+    """Проверка юза через API Telegram. Защищено от блокировок хостинга."""
     try:
         await bot.get_chat(f"@{username}")
-        return "taken"  # Нашел — точно занят
+        return "taken"
     except TelegramBadRequest as e:
-        if "chat not found" in str(e).lower():
-            return "maybe_available"  # Не нашел — либо свободен, либо скрыт настройками
+        err_msg = str(e).lower()
+        if "chat not found" in err_msg:
+            return "available"
         return "taken"
     except TelegramRetryAfter as e:
-        logger.warning(f"Флуд-контроль API! Ожидание {e.retry_after} сек.")
+        logger.warning(f"Флуд-контроль! Ожидание {e.retry_after} сек.")
         await asyncio.sleep(e.retry_after)
         return "error"
     except Exception:
         return "error"
 
-async def check_via_tme_web(username: str) -> bool:
-    """
-    Шаг 2: Перепроверка через веб-страницу t.me/{username}.
-    Помогает отсечь скрытые личные аккаунты, которые API считает свободными.
-    """
-    url = f"https://t.me{username}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    try:
-        async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                html = response.text
-                # Если страницы нет (показывается дефолтный текст-заглушка без описания профиля)
-                if "if you have telegram, you can contact" in html.lower() and "tgme_page_extra" not in html.lower():
-                    return True  # Реально свободен!
-            return False
-    except Exception as e:
-        logger.warning(f"Сбой t.me для @{username}: {e}")
-        return False
-
-def generate_random_username(length: int) -> str:
-    return "".join(random.choice(string.ascii_lowercase) for _ in range(length))
+def generate_username(length: int, use_digits: bool) -> str:
+    first_char = random.choice(string.ascii_lowercase)
+    pool = string.ascii_lowercase + (string.digits if use_digits else "")
+    other_chars = "".join(random.choice(pool) for _ in range(length - 1))
+    return first_char + other_chars
 
 async def scanning_loop(chat_id: int):
     try:
+        settings = get_default_settings(chat_id)
+        mode_desc = "с цифрами" if settings["use_digits"] else "без цифр"
         await bot.send_message(
             chat_id, 
-            "🚀 Поиск перезапущен с умной двухэтапной фильтрацией!\n"
-            "Ищем чистые 5 и 6-значные имена без скрытых аккаунтов."
+            f"🚀 Поиск активирован!\n🎯 Ищем: **{settings['length']}-знаки**, режим: **{mode_desc}**.\n"
+            f"⏳ Поиск коротких юзов занимает время. Свободные имена придут сюда.",
+            parse_mode="Markdown"
         )
         
         while True:
-            # Случайно выбираем длину (5 или 6 знаков)
-            length = random.choice([5, 6])
-            username = generate_random_username(length)
+            # Свежие настройки из кэша пользователя
+            cfg = get_default_settings(chat_id)
+            username = generate_username(cfg["length"], cfg["use_digits"])
             
-            # Этап 1: Проверяем через Bot API
-            api_status = await check_via_telegram_api(username)
+            status = await check_username_via_telegram(username)
             
-            if api_status == "maybe_available":
-                # Этап 2: Допроверяем через Web-страницу, чтобы исключить скрытые профили
-                is_free = await check_via_tme_web(username)
-                
-                if is_free:
-                    message_text = f"🎉 **Найден абсолютно свободный юзернейм!**\n\n👉 `@{username}`\n\nПроверен по двум базам. Забирай быстрее!"
-                    await bot.send_message(chat_id, message_text, parse_mode="Markdown")
-                    await asyncio.sleep(2)
+            if status == "available":
+                message_text = f"🎉 **Найден свободный юзернейм!**\n\n👉 `@{username}`\n\nПроверь и займи его быстрее!"
+                await bot.send_message(chat_id, message_text, parse_mode="Markdown")
+                await asyncio.sleep(2)
             
-            # Безопасный интервал, чтобы Render и Telegram не ругались
-            await asyncio.sleep(random.uniform(5.0, 8.0))
+            # Безопасная пауза для защиты от Flood Wait
+            await asyncio.sleep(random.uniform(6.0, 9.0))
             
     except asyncio.CancelledError:
-        await bot.send_message(chat_id, "🛑 Поиск успешно остановлен.")
+        await bot.send_message(chat_id, "🛑 Фоновый поиск остановлен.")
     except Exception as e:
-        logger.error(f"Критическая ошибка в цикле: {e}")
+        logger.error(f"Ошибка в цикле сканирования: {e}")
         active_scans.pop(chat_id, None)
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+@dp.message(Command("start"), F.chat.type == "private")
+@dp.message(Command("settings"), F.chat.type == "private")
+async def cmd_settings(message: types.Message):
     await message.answer(
-        "Привет! Я точный двухэтапный чекер юзернеймов (5-6 знаков).\n\n"
-        "Команды:\n"
-        "/search — Начать точный поиск\n"
-        "/stop — Остановить поиск"
+        "⚙️ **Панель управления чекером**\n\n"
+        "Настраивай параметры бота с помощью кнопок ниже. "
+        "Поиск коротких буквенных юзов требует времени, запасись терпением!",
+        reply_markup=make_settings_keyboard(message.chat.id),
+        parse_mode="Markdown"
     )
 
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    chat_id = message.chat.id
+@dp.callback_query(F.data.startswith("set_len_"))
+async def handle_len_setting(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    new_len = int(callback.data.split("_")[-1])
+    settings = get_default_settings(chat_id)
+    
+    if settings["length"] != new_len:
+        settings["length"] = new_len
+        await callback.message.edit_reply_markup(reply_markup=make_settings_keyboard(chat_id))
+    await callback.answer()
+
+@dp.callback_query(F.data == "toggle_digits")
+async def handle_digits_setting(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
+    settings = get_default_settings(chat_id)
+    settings["use_digits"] = not settings["use_digits"]
+    
+    await callback.message.edit_reply_markup(reply_markup=make_settings_keyboard(chat_id))
+    await callback.answer()
+
+@dp.callback_query(F.data == "start_search")
+async def handle_start_search(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
     if chat_id in active_scans:
-        await message.answer("Поиск уже идет!")
+        await callback.answer("Поиск уже запущен!", show_alert=True)
         return
+        
     task = asyncio.create_task(scanning_loop(chat_id))
     active_scans[chat_id] = task
+    
+    await callback.message.edit_reply_markup(reply_markup=make_settings_keyboard(chat_id))
+    await callback.answer("Поиск запущен!")
 
-@dp.message(Command("stop"))
-async def cmd_stop(message: types.Message):
-    chat_id = message.chat.id
+@dp.callback_query(F.data == "stop_search")
+async def handle_stop_search(callback: types.CallbackQuery):
+    chat_id = callback.message.chat.id
     if chat_id not in active_scans:
-        await message.answer("Поиск не запущен.")
+        await callback.answer("Поиск не запущен!", show_alert=True)
         return
+        
     task = active_scans.pop(chat_id)
     task.cancel()
+    
+    await callback.message.edit_reply_markup(reply_markup=make_settings_keyboard(chat_id))
+    await callback.answer("Поиск остановлен!")
 
 async def main():
     logger.info("Бот успешно запущен!")
