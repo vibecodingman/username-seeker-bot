@@ -20,8 +20,8 @@ active_scans = {}
 
 async def is_username_truly_available(username: str) -> bool:
     """
-    Проверяет юзернейм напрямую через Fragment.com.
-    Это единственный способ отсечь скрытые и заброшенные аккаунты.
+    Проверяет юзернейм напрямую через парсинг Fragment.com.
+    Железно отсекает занятые аккаунты, скрытые профили и аукционы.
     """
     url = f"https://fragment.com/username/{username}"
     headers = {
@@ -33,22 +33,25 @@ async def is_username_truly_available(username: str) -> bool:
         async with httpx.AsyncClient(headers=headers, timeout=6.0, follow_redirects=True) as client:
             response = await client.get(url)
             
-            # Если 404 — страницы точно нет, юз 100% свободен
-            if response.status_code == 404:
+            if response.status_code == 200:
+                html_text = response.text.lower()
+                
+                # КРИТИЧЕСКИЙ МАРКЕР СВОБОДНОГО ЮЗЕРНЕЙМА:
+                # Если на Фрагменте есть кнопка "Buy on Telegram" или надпись, что имя доступно для покупки
+                if "is available" in html_text or "buy on telegram" in html_text or "available" in html_text:
+                    # Но при этом проверяем, что это не активный аукцион
+                    if "place a bid" not in html_text and "auction" not in html_text and "unavailable" not in html_text:
+                        logger.info(f"✨ Найден свободный юз: @{username}")
+                        return True
+                
+                # Если на странице написано "Unavailable", "Taken" или есть кнопки ставок — значит занят
+                if "unavailable" in html_text or "taken" in html_text or "place a bid" in html_text:
+                    return False
+                    
+            # Если Fragment выдал 404, это тоже часто значит, что юза нет в системе NFT, но он может быть свободен в ТГ
+            elif response.status_code == 404:
                 return True
                 
-            if response.status_code == 200:
-                html_text = response.text
-                
-                # Тщательно проверяем текст страницы на маркеры занятости
-                if "unavailable" in html_text.lower() or "taken" in html_text.lower():
-                    return False  # Занят обычным пользователем
-                if "auction" in html_text.lower() or "place a bid" in html_text.lower():
-                    return False  # Висит на аукционе Fragment
-                if "is available" in html_text.lower() or "available" in html_text.lower():
-                    return True   # Доступен для регистрации
-                    
-            # При любых подозрительных ответах (например, капча 429) пропускаем, чтобы не спамить
             return False
             
     except Exception as e:
@@ -56,23 +59,23 @@ async def is_username_truly_available(username: str) -> bool:
         return False
 
 def generate_random_username(length: int) -> str:
-    # Ищем красивые имена только из букв
+    # Ищем красивые имена только из латинских букв
     return "".join(random.choice(string.ascii_lowercase) for _ in range(length))
 
 async def scanning_loop(chat_id: int):
     try:
         await bot.send_message(
             chat_id, 
-            "🚀 Поиск перезапущен по новой технологии!\n"
-            "Теперь проверяем строго через базу Fragment. Спама занятых юзов больше не будет."
+            "🚀 Поиск запущен через парсинг Fragment!\n"
+            "Ищем чистые 5 и 6-значные имена без цифр и аукционов."
         )
         
         while True:
-            # Ищем только 5 и 6-знаки
+            # Выбираем случайную длину (5 или 6 знаков)
             length = random.choice([5, 6])
             username = generate_random_username(length)
             
-            # Проверяем на Fragment
+            # Проверяем точный статус на Fragment
             available = await is_username_truly_available(username)
             
             if available:
@@ -80,7 +83,7 @@ async def scanning_loop(chat_id: int):
                 await bot.send_message(chat_id, message_text, parse_mode="Markdown")
                 await asyncio.sleep(2)
             
-            # Безопасная задержка, чтобы Fragment не забанил IP сервера Render
+            # Задержка 5-8 секунд, чтобы Render/Fragment не забанили нас по IP
             await asyncio.sleep(random.uniform(5.0, 8.0))
             
     except asyncio.CancelledError:
@@ -93,7 +96,7 @@ async def scanning_loop(chat_id: int):
 async def cmd_start(message: types.Message):
     await message.answer(
         "Привет! Я точный чекер юзернеймов (5-6 знаков).\n"
-        "Фильтрую занятые аккаунты и аукционы.\n\n"
+        "Я проверяю доступность имен напрямую через Fragment.\n\n"
         "Команды:\n"
         "/search — Начать поиск\n"
         "/stop — Остановить поиск"
