@@ -6,6 +6,7 @@ import os
 import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -18,72 +19,73 @@ dp = Dispatcher()
 # Хранилище запущенных задач поиска {chat_id: asyncio.Task}
 active_scans = {}
 
-async def is_username_truly_available(username: str) -> bool:
+async def check_via_telegram_api(username: str) -> str:
+    """Шаг 1: Быстрая проверка через официальное API Telegram"""
+    try:
+        await bot.get_chat(f"@{username}")
+        return "taken"  # Нашел — точно занят
+    except TelegramBadRequest as e:
+        if "chat not found" in str(e).lower():
+            return "maybe_available"  # Не нашел — либо свободен, либо скрыт настройками
+        return "taken"
+    except TelegramRetryAfter as e:
+        logger.warning(f"Флуд-контроль API! Ожидание {e.retry_after} сек.")
+        await asyncio.sleep(e.retry_after)
+        return "error"
+    except Exception:
+        return "error"
+
+async def check_via_tme_web(username: str) -> bool:
     """
-    Проверяет юзернейм напрямую через парсинг Fragment.com.
-    Железно отсекает занятые аккаунты, скрытые профили и аукционы.
+    Шаг 2: Перепроверка через веб-страницу t.me/{username}.
+    Помогает отсечь скрытые личные аккаунты, которые API считает свободными.
     """
-    url = f"https://fragment.com/username/{username}"
+    url = f"https://t.me{username}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=6.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
             response = await client.get(url)
-            
             if response.status_code == 200:
-                html_text = response.text.lower()
-                
-                # КРИТИЧЕСКИЙ МАРКЕР СВОБОДНОГО ЮЗЕРНЕЙМА:
-                # Если на Фрагменте есть кнопка "Buy on Telegram" или надпись, что имя доступно для покупки
-                if "is available" in html_text or "buy on telegram" in html_text or "available" in html_text:
-                    # Но при этом проверяем, что это не активный аукцион
-                    if "place a bid" not in html_text and "auction" not in html_text and "unavailable" not in html_text:
-                        logger.info(f"✨ Найден свободный юз: @{username}")
-                        return True
-                
-                # Если на странице написано "Unavailable", "Taken" или есть кнопки ставок — значит занят
-                if "unavailable" in html_text or "taken" in html_text or "place a bid" in html_text:
-                    return False
-                    
-            # Если Fragment выдал 404, это тоже часто значит, что юза нет в системе NFT, но он может быть свободен в ТГ
-            elif response.status_code == 404:
-                return True
-                
+                html = response.text
+                # Если страницы нет (показывается дефолтный текст-заглушка без описания профиля)
+                if "if you have telegram, you can contact" in html.lower() and "tgme_page_extra" not in html.lower():
+                    return True  # Реально свободен!
             return False
-            
     except Exception as e:
-        logger.warning(f"Сбой сети при проверке @{username}: {e}")
+        logger.warning(f"Сбой t.me для @{username}: {e}")
         return False
 
 def generate_random_username(length: int) -> str:
-    # Ищем красивые имена только из латинских букв
     return "".join(random.choice(string.ascii_lowercase) for _ in range(length))
 
 async def scanning_loop(chat_id: int):
     try:
         await bot.send_message(
             chat_id, 
-            "🚀 Поиск запущен через парсинг Fragment!\n"
-            "Ищем чистые 5 и 6-значные имена без цифр и аукционов."
+            "🚀 Поиск перезапущен с умной двухэтапной фильтрацией!\n"
+            "Ищем чистые 5 и 6-значные имена без скрытых аккаунтов."
         )
         
         while True:
-            # Выбираем случайную длину (5 или 6 знаков)
+            # Случайно выбираем длину (5 или 6 знаков)
             length = random.choice([5, 6])
             username = generate_random_username(length)
             
-            # Проверяем точный статус на Fragment
-            available = await is_username_truly_available(username)
+            # Этап 1: Проверяем через Bot API
+            api_status = await check_via_telegram_api(username)
             
-            if available:
-                message_text = f"🎉 **Найден абсолютно свободный юзернейм!**\n\n👉 `@{username}`\n\nПроверен через Fragment. Забирай быстрее!"
-                await bot.send_message(chat_id, message_text, parse_mode="Markdown")
-                await asyncio.sleep(2)
+            if api_status == "maybe_available":
+                # Этап 2: Допроверяем через Web-страницу, чтобы исключить скрытые профили
+                is_free = await check_via_tme_web(username)
+                
+                if is_free:
+                    message_text = f"🎉 **Найден абсолютно свободный юзернейм!**\n\n👉 `@{username}`\n\nПроверен по двум базам. Забирай быстрее!"
+                    await bot.send_message(chat_id, message_text, parse_mode="Markdown")
+                    await asyncio.sleep(2)
             
-            # Задержка 5-8 секунд, чтобы Render/Fragment не забанили нас по IP
+            # Безопасный интервал, чтобы Render и Telegram не ругались
             await asyncio.sleep(random.uniform(5.0, 8.0))
             
     except asyncio.CancelledError:
@@ -95,10 +97,9 @@ async def scanning_loop(chat_id: int):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "Привет! Я точный чекер юзернеймов (5-6 знаков).\n"
-        "Я проверяю доступность имен напрямую через Fragment.\n\n"
+        "Привет! Я точный двухэтапный чекер юзернеймов (5-6 знаков).\n\n"
         "Команды:\n"
-        "/search — Начать поиск\n"
+        "/search — Начать точный поиск\n"
         "/stop — Остановить поиск"
     )
 
