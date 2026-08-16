@@ -112,8 +112,10 @@ async def cmd_stop(message: types.Message):
     is_scanning = False
     await message.answer("🛑 Поиск остановлен.")
 
-# Асинхронный запуск бота параллельно с FastAPI
-@app.on_event("startup")
-async def on_startup():
-    # Запускаем долгоиграющий пуллинг aiogram без блокировки основного потока FastAPI
-    asyncio.create_task(dp.start_polling(bot))
+# Прямой асинхронный запуск бота без всяких веб-серверов
+async def main():
+    logger.info("Бот успешно запущен и начинает опрос Telegram!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
