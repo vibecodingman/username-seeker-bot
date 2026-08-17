@@ -81,6 +81,71 @@ async def handle_stop(cb: types.CallbackQuery):
     # Остановка фонового процесса сканирования
     pass
 
+# --- РЕАЛЬНЫЙ КОД ПРОПУЩЕННЫХ ФУНКЦИЙ ---
+
+def make_settings_keyboard(chat_id: int):
+    cfg = get_default_settings(chat_id)
+    builder = InlineKeyboardBuilder()
+    l5 = "✅ 5 знаков" if cfg["length"] == 5 else "5 знаков"
+    l6 = "✅ 6 знаков" if cfg["length"] == 6 else "6 знаков"
+    builder.button(text=l5, callback_data="set_len_5")
+    builder.button(text=l6, callback_data="set_len_6")
+    dig = "🔢 Цифры: ВКЛ" if cfg["use_digits"] else "🔤 Только буквы"
+    builder.button(text=dig, callback_data="toggle_digits")
+    if chat_id in active_scans:
+        builder.button(text="🛑 ОСТАНОВИТЬ", callback_data="stop_search")
+    else:
+        builder.button(text="🚀 ЗАПУСТИТЬ", callback_data="start_search")
+    builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+async def scanning_loop(chat_id: int):
+    try:
+        cfg = get_default_settings(chat_id)
+        mode = "с цифрами" if cfg["use_digits"] else "без цифр"
+        await bot.send_message(chat_id, f"🚀 Поиск запущен ({cfg['length']} зн., {mode})")
+        while True:
+            current_cfg = get_default_settings(chat_id)
+            user = generate_username(current_cfg["length"], current_cfg["use_digits"])
+            res = await check_username_via_telegram(user)
+            if res == "available":
+                await bot.send_message(chat_id, f"🎉 Свободен: @{user}")
+                await asyncio.sleep(2)
+            await asyncio.sleep(random.uniform(6.0, 9.0))
+    except asyncio.CancelledError:
+        await bot.send_message(chat_id, "🛑 Поиск остановлен.")
+    except Exception:
+        active_scans.pop(chat_id, None)
+
+@dp.callback_query(F.data.startswith("set_len_"))
+async def handle_len(cb: types.CallbackQuery):
+    get_default_settings(cb.message.chat.id)["length"] = int(cb.data.split("_")[-1])
+    await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cb.message.chat.id))
+    await cb.answer()
+
+@dp.callback_query(F.data == "toggle_digits")
+async def handle_digits(cb: types.CallbackQuery):
+    cfg = get_default_settings(cb.message.chat.id)
+    cfg["use_digits"] = not cfg["use_digits"]
+    await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cb.message.chat.id))
+    await cb.answer()
+
+@dp.callback_query(F.data == "start_search")
+async def handle_start(cb: types.CallbackQuery):
+    cid = cb.message.chat.id
+    if cid in active_scans: return await cb.answer("Уже ищу!")
+    active_scans[cid] = asyncio.create_task(scanning_loop(cid))
+    await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cid))
+    await cb.answer("Запущено!")
+
+@dp.callback_query(F.data == "stop_search")
+async def handle_stop(cb: types.CallbackQuery):
+    cid = cb.message.chat.id
+    if cid in active_scans: active_scans.pop(cid).cancel()
+    await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cid))
+    await cb.answer("Остановлено!")
+
+
 async def main():
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text='Бот активен!'))
