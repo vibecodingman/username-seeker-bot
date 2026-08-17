@@ -57,65 +57,15 @@ def make_settings_keyboard(chat_id: int):
     # Генерация инлайн-клавиатуры настроек и управления поиском
     pass
 
+# --- ПРАВИЛЬНЫЙ ПОРЯДОК ОБРАБОТЧИКОВ И ЗАПУСКА В main.py ---
+
 @dp.message(Command("start"))
 async def cmd_settings(message: types.Message):
-    await message.answer("⚙ Панель чекера", reply_markup=make_settings_keyboard(message.chat.id))
-
-@dp.callback_query(F.data.startswith("set_len_"))
-async def handle_len(cb: types.CallbackQuery):
-    # Обработка изменения длины юзернейма
-    pass
-
-@dp.callback_query(F.data == "toggle_digits")
-async def handle_digits(cb: types.CallbackQuery):
-    # Переключение использования цифр
-    pass
-
-@dp.callback_query(F.data == "start_search")
-async def handle_start(cb: types.CallbackQuery):
-    # Запуск фонового процесса сканирования
-    pass
-
-@dp.callback_query(F.data == "stop_search")
-async def handle_stop(cb: types.CallbackQuery):
-    # Остановка фонового процесса сканирования
-    pass
-
-# --- РЕАЛЬНЫЙ КОД ПРОПУЩЕННЫХ ФУНКЦИЙ ---
-
-def make_settings_keyboard(chat_id: int):
-    cfg = get_default_settings(chat_id)
-    builder = InlineKeyboardBuilder()
-    l5 = "✅ 5 знаков" if cfg["length"] == 5 else "5 знаков"
-    l6 = "✅ 6 знаков" if cfg["length"] == 6 else "6 знаков"
-    builder.button(text=l5, callback_data="set_len_5")
-    builder.button(text=l6, callback_data="set_len_6")
-    dig = "🔢 Цифры: ВКЛ" if cfg["use_digits"] else "🔤 Только буквы"
-    builder.button(text=dig, callback_data="toggle_digits")
-    if chat_id in active_scans:
-        builder.button(text="🛑 ОСТАНОВИТЬ", callback_data="stop_search")
-    else:
-        builder.button(text="🚀 ЗАПУСТИТЬ", callback_data="start_search")
-    builder.adjust(2, 1, 1)
-    return builder.as_markup()
-
-async def scanning_loop(chat_id: int):
-    try:
-        cfg = get_default_settings(chat_id)
-        mode = "с цифрами" if cfg["use_digits"] else "без цифр"
-        await bot.send_message(chat_id, f"🚀 Поиск запущен ({cfg['length']} зн., {mode})")
-        while True:
-            current_cfg = get_default_settings(chat_id)
-            user = generate_username(current_cfg["length"], current_cfg["use_digits"])
-            res = await check_username_via_telegram(user)
-            if res == "available":
-                await bot.send_message(chat_id, f"🎉 Свободен: @{user}")
-                await asyncio.sleep(2)
-            await asyncio.sleep(random.uniform(6.0, 9.0))
-    except asyncio.CancelledError:
-        await bot.send_message(chat_id, "🛑 Поиск остановлен.")
-    except Exception:
-        active_scans.pop(chat_id, None)
+    await message.answer(
+        "⚙ **Панель управления чекером**", 
+        reply_markup=make_settings_keyboard(message.chat.id),
+        parse_mode="Markdown"
+    )
 
 @dp.callback_query(F.data.startswith("set_len_"))
 async def handle_len(cb: types.CallbackQuery):
@@ -133,25 +83,32 @@ async def handle_digits(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "start_search")
 async def handle_start(cb: types.CallbackQuery):
     cid = cb.message.chat.id
-    if cid in active_scans: return await cb.answer("Уже ищу!")
+    if cid in active_scans: 
+        return await cb.answer("Уже ищу!", show_alert=True)
     active_scans[cid] = asyncio.create_task(scanning_loop(cid))
     await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cid))
-    await cb.answer("Запущено!")
+    await cb.answer("Поиск запущен!")
 
 @dp.callback_query(F.data == "stop_search")
 async def handle_stop(cb: types.CallbackQuery):
     cid = cb.message.chat.id
-    if cid in active_scans: active_scans.pop(cid).cancel()
+    if cid in active_scans: 
+        active_scans.pop(cid).cancel()
     await cb.message.edit_reply_markup(reply_markup=make_settings_keyboard(cid))
-    await cb.answer("Остановлено!")
+    await cb.answer("Поиск остановлен!")
 
-
+# Главная функция запуска - всегда должна идти в самом низу файла!
 async def main():
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text='Бот активен!'))
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
+    
+    # Запускаем веб-сервер на порту Render
+    port = int(os.environ.get('PORT', 8080))
+    await web.TCPSite(runner, '0.0.0.0', port).start()
+    
+    # Начинаем опрос серверов Telegram
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
