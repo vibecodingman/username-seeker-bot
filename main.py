@@ -70,7 +70,7 @@ def make_settings_keyboard(chat_id: int):
     builder = InlineKeyboardBuilder()
     
     # Кнопки выбора длины юзернейма
-    lengths = [4, 5, 6, 7]
+    lengths = [5, 6, 7]
     for l in lengths:
         prefix = "✅ " if cfg["length"] == l else ""
         builder.button(text=f"{prefix}{l} симв.", callback_data=f"set_len_{l}")
