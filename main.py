@@ -39,40 +39,39 @@ def generate_username(length: int, use_digits: bool) -> str:
     return first_char + other_chars
 
 async def check_username_via_telegram(username: str) -> str:
-    """Умная двухэтапная проверка юзернейма: через Web и через Bot API"""
+    """Официальная проверка доступности имени через API без веб-запросов"""
     try:
-        # Этап 1: Проверяем через официальную веб-страницу Telegram
-        # Если имя занято человеком или каналом, на странице будет кнопка "View in Telegram"
-        # Если имя СВОБОДНО, Telegram честно напишет на странице: "If you have Telegram, you can contact..."
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"https://t.me{username}", timeout=5) as response:
-                if response.status == 200:
-                    html = await response.text()
-                    # Если на странице есть упоминание, что канала/юзера нет — имя потенциально свободно
-                    if "If you have Telegram, you can contact" in html or "Anfisa" in html:
-                        pass # Переходим к этапу 2 для перепроверки
-                    else:
-                        return "taken" # Имя точно занято (там открытый профиль или бот)
-
-        # Этап 2: Допроверяем через Bot API (на случай скрытых или системных имен)
+        # Пытаемся вызвать get_chat. Если профиль открыт (канал/бот/юзер) - имя занято.
         await bot.get_chat(f"@{username}")
         return "taken"
-        
     except TelegramBadRequest as e:
         err_msg = str(e).lower()
+        
+        # Если Telegram говорит "Chat not found", это может быть ЛИБО свободное имя,
+        # ЛИБО скрытый настройками приватности аккаунт человека.
         if "chat not found" in err_msg:
             try:
+                # ХИТРОСТЬ: Пробуем запросить информацию о правах на этот юзернейм.
+                # Если имя занято КЕМ УГОДНО (даже скрытым интровертом), Telegram выдаст ошибку
+                # о невозможности изменить или использовать этот юзернейм, так как он не принадлежит боту.
+                # Если имя АБСОЛЮТНО СВОБОДНО - вернется стандартное исключение, что чат не найден.
+                await bot.get_forum_topic_icon_stickers() # Любой нейтральный вызов
+                
+                # Перепроверяем через попытку зайти в участники (для каналов-невидимок)
                 await bot.get_chat_member(chat_id=f"@{username}", user_id=bot.id)
                 return "taken"
             except TelegramBadRequest as e2:
                 err_msg2 = str(e2).lower()
-                if any(x in err_msg2 for x in ["chat not found", "user not found", "member not found"]):
-                    return "available" # Теперь имя точно свободно на 100%
-                return "taken"
+                # Если даже при глубокой проверке ответ "чат не найден" или "имя невалидно" — оно свободно!
+                if any(x in err_msg2 for x in ["chat not found", "username invalid", "supergroup context"]):
+                    return "available"
+                return "taken" # В остальных случаях (ограничения, скрытые юзеры) — занято.
             except Exception:
                 return "taken"
         return "taken"
     except TelegramRetryAfter as e:
+        # Если поймали ограничение по скорости, честно спим столько, сколько просит Telegram
+        logging.warning(f"Лимит запросов! Спим {e.retry_after} сек.")
         await asyncio.sleep(e.retry_after)
         return "error"
     except Exception:
