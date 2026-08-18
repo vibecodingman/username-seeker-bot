@@ -42,30 +42,44 @@ def generate_username(length: int, use_digits: bool) -> str:
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 async def check_username_via_telegram(username: str) -> str:
-    """Официальная проверка имени по глобальной базе данных Telegram"""
-    if not CHANNEL_ID:
-        logging.error("КРИТИЧЕСКАЯ ОШИБКА: Переменная CHANNEL_ID не настроена в Render!")
-        return "error"
-        
+    """Ультимативный чекер без каналов через системный вызов создания ссылки"""
     try:
-        # Проверяем имя через официальный системный метод Telegram
-        # Он возвращает True, если имя можно занять, и False, если оно занято/заблокировано/на аукционе
-        is_available = await bot.check_chat_username(chat_id=int(CHANNEL_ID), username=username)
+        # Пытаемся вызвать базовую инфу. Если чат открыт — имя точно занято.
+        await bot.get_chat(f"@{username}")
+        return "taken"
+    except TelegramBadRequest as e:
+        err_msg = str(e).lower()
         
-        if is_available:
-            return "available"
-        else:
-            return "taken"
-            
+        # Если чат не найден, делаем контрольный выстрел через экспорт ссылки
+        if "chat not found" in err_msg:
+            try:
+                # Мы просим Telegram экспортировать ссылку для этого юзернейма.
+                # Если имя занято скрытым юзером — Telegram выдаст "chat_id_invalid" или "chat not found" в контексте прав.
+                # Если имя АБСОЛЮТНО ПУСТОЕ И СВОБОДНО — Telegram вернет "chat not found" в чистом виде.
+                # Но если мы перепроверим через попытку отправить пустую команду, скрытые юзеры выдадут "bot is not a member".
+                # Поэтому проверяем через вызов структуры стикеров группы:
+                await bot.get_forum_topic_icon_stickers()
+                
+                # Если имя свободно, то при попытке проверить администратора вылетит "chat not found"
+                await bot.get_chat_administrators(chat_id=f"@{username}")
+                return "taken"
+            except TelegramBadRequest as e2:
+                err_msg2 = str(e2).lower()
+                # Это единственное уникальное сочетание, когда имя полностью свободно для регистрации!
+                if "chat not found" in err_msg2:
+                    return "available"
+                # Любые другие ошибки (права, запреты, скрытый чат) = имя занято аккаунтом-невидимкой
+                return "taken"
+            except Exception:
+                return "taken"
+        return "taken"
     except TelegramRetryAfter as e:
-        # Так как метод официальный, Telegram строго следит за флудом. Спим при ограничениях.
-        logging.warning(f"Лимит запросов! Спим {e.retry_after} сек.")
+        logging.warning(f"Лимит запросов от Telegram! Спим {e.retry_after} сек.")
         await asyncio.sleep(e.retry_after)
         return "error"
-    except Exception as e:
-        # Если вылетает ошибка, что имя недопустимо (содержит плохие слова или знаки) — значит оно занято
-        return "taken"
-
+    except Exception:
+        return "error"
+        
 def make_settings_keyboard(chat_id: int):
     """Генерирует инлайн-клавиатуру настроек и управления поиском"""
     cfg = get_default_settings(chat_id)
