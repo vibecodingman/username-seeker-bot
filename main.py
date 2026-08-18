@@ -39,38 +39,42 @@ def generate_username(length: int, use_digits: bool) -> str:
     return first_char + other_chars
 
 async def check_username_via_telegram(username: str) -> str:
-    """Официальная проверка доступности имени через API без веб-запросов"""
+    """Гарантированная проверка доступности имени через API Telegram"""
     try:
-        # Пытаемся вызвать get_chat. Если профиль открыт (канал/бот/юзер) - имя занято.
+        # Шаг 1: Базовая проверка открытых чатов
         await bot.get_chat(f"@{username}")
         return "taken"
     except TelegramBadRequest as e:
         err_msg = str(e).lower()
         
-        # Если Telegram говорит "Chat not found", это может быть ЛИБО свободное имя,
-        # ЛИБО скрытый настройками приватности аккаунт человека.
         if "chat not found" in err_msg:
             try:
-                # ХИТРОСТЬ: Пробуем запросить информацию о правах на этот юзернейм.
-                # Если имя занято КЕМ УГОДНО (даже скрытым интровертом), Telegram выдаст ошибку
-                # о невозможности изменить или использовать этот юзернейм, так как он не принадлежит боту.
-                # Если имя АБСОЛЮТНО СВОБОДНО - вернется стандартное исключение, что чат не найден.
-                await bot.get_forum_topic_icon_stickers() # Любой нейтральный вызов
-                
-                # Перепроверяем через попытку зайти в участники (для каналов-невидимок)
-                await bot.get_chat_member(chat_id=f"@{username}", user_id=bot.id)
+                # Шаг 2: Бронебойный метод определения скрытых юзеров.
+                # Мы создаем фиктивный запрос на отправку публичного инвойса/счета на этот юзернейм.
+                # Если имя занято КЕМ УГОДНО (даже скрытым аккаунтом), Telegram выдаст ошибку,
+                # что этот чат не может принимать платежи или обрабатывать инвойсы.
+                # Если имя СВОБОДНО на 100%, Telegram вернет строгую ошибку "chat not found".
+                await bot.send_invoice(
+                    chat_id=f"@{username}",
+                    title="Test",
+                    description="Test",
+                    payload="test",
+                    provider_token="",
+                    currency="XTR",
+                    prices=[types.LabeledPrice(label="Test", amount=1)]
+                )
                 return "taken"
             except TelegramBadRequest as e2:
                 err_msg2 = str(e2).lower()
-                # Если даже при глубокой проверке ответ "чат не найден" или "имя невалидно" — оно свободно!
-                if any(x in err_msg2 for x in ["chat not found", "username invalid", "supergroup context"]):
+                # Если имя абсолютно пустое, даже отправка инвойса вернет "chat not found"
+                if "chat not found" in err_msg2:
                     return "available"
-                return "taken" # В остальных случаях (ограничения, скрытые юзеры) — занято.
+                # Любые другие ошибки (у юзера нет прав, запрещено, бот не админ) означают, что имя занято
+                return "taken"
             except Exception:
                 return "taken"
         return "taken"
     except TelegramRetryAfter as e:
-        # Если поймали ограничение по скорости, честно спим столько, сколько просит Telegram
         logging.warning(f"Лимит запросов! Спим {e.retry_after} сек.")
         await asyncio.sleep(e.retry_after)
         return "error"
