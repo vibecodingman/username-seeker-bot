@@ -42,43 +42,36 @@ def generate_username(length: int, use_digits: bool) -> str:
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 
 async def check_username_via_telegram(username: str) -> str:
-    """Ультимативный чекер без каналов через системный вызов создания ссылки"""
+    """Проверка юзернейма через официальный веб-интерфейс Telegram"""
     try:
-        # Пытаемся вызвать базовую инфу. Если чат открыт — имя точно занято.
-        await bot.get_chat(f"@{username}")
-        return "taken"
-    except TelegramBadRequest as e:
-        err_msg = str(e).lower()
+        # Устанавливаем заголовки, чтобы Telegram видел в нас обычный браузер
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         
-        # Если чат не найден, делаем контрольный выстрел через экспорт ссылки
-        if "chat not found" in err_msg:
-            try:
-                # Мы просим Telegram экспортировать ссылку для этого юзернейма.
-                # Если имя занято скрытым юзером — Telegram выдаст "chat_id_invalid" или "chat not found" в контексте прав.
-                # Если имя АБСОЛЮТНО ПУСТОЕ И СВОБОДНО — Telegram вернет "chat not found" в чистом виде.
-                # Но если мы перепроверим через попытку отправить пустую команду, скрытые юзеры выдадут "bot is not a member".
-                # Поэтому проверяем через вызов структуры стикеров группы:
-                await bot.get_forum_topic_icon_stickers()
-                
-                # Если имя свободно, то при попытке проверить администратора вылетит "chat not found"
-                await bot.get_chat_administrators(chat_id=f"@{username}")
-                return "taken"
-            except TelegramBadRequest as e2:
-                err_msg2 = str(e2).lower()
-                # Это единственное уникальное сочетание, когда имя полностью свободно для регистрации!
-                if "chat not found" in err_msg2:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # Запрашиваем официальную страницу юзернейма в Telegram
+            async with session.get(f"https://t.me{username}", timeout=5) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    
+                    # Если на странице есть этот текст — имя СВОБОДНО на 100%
+                    if "If you have Telegram, you can contact" in html:
+                        return "available"
+                    
+                    # Если этого текста нет, значит там профиль человека, канал или заглушка Fragment
+                    return "taken"
+                    
+                # Если Telegram вернул ошибку 404 — имя свободно
+                elif response.status == 404:
                     return "available"
-                # Любые другие ошибки (права, запреты, скрытый чат) = имя занято аккаунтом-невидимкой
+                    
                 return "taken"
-            except Exception:
-                return "taken"
-        return "taken"
-    except TelegramRetryAfter as e:
-        logging.warning(f"Лимит запросов от Telegram! Спим {e.retry_after} сек.")
-        await asyncio.sleep(e.retry_after)
+                
+    except Exception as e:
+        logging.error(f"Ошибка веб-проверки для {username}: {e}")
         return "error"
-    except Exception:
-        return "error"
+
         
 def make_settings_keyboard(chat_id: int):
     """Генерирует инлайн-клавиатуру настроек и управления поиском"""
